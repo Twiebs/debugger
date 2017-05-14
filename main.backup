@@ -1,0 +1,1231 @@
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#pragma GCC diagnostic ignored "-Wunused-variable"
+#pragma GCC diagnostic ignored "-Wunused-function"
+#pragma GCC diagnostic ignored "-Wswitch"
+
+#include <assert.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+#define LOG_ERROR(...) { printf(__VA_ARGS__); printf("\n"); }
+#define ARRAYCOUNT(a) (sizeof(a) / sizeof(*a))
+
+#define literal_strlen(x) (sizeof(x) - 1)
+
+#include <cmath>
+#include <functional>
+
+#if 0
+#include "gdb_backend.cpp"
+#else
+#include "lldb_backend.cpp"
+#endif
+
+#define debug_initialize(exe) lldb_initialize(exe)
+#define debug_terminate lldb_terminate
+#define debug_step_into lldb_step_into
+#define debug_step_over lldb_step_over
+
+#include <SDL2/SDL.h>
+#include <SDL2/SDL_ttf.h>
+
+#define DEFAULT_WINDOW_WIDTH 1280
+#define DEFUALT_WINDOW_HEIGHT 720
+
+
+static inline
+uint32_t min(uint32_t a, uint32_t b)
+{
+  uint32_t result = a < b ? a : b; 
+  return result;
+}
+
+static inline
+int max(int a, int b)
+{
+  int result = a > b ? a : b;
+  return result;
+}
+
+struct RGB8
+{
+  uint8_t r;
+  uint8_t g;
+  uint8_t b;
+};
+
+struct RGBA8
+{
+  uint8_t r;
+  uint8_t g;
+  uint8_t b;
+  uint8_t a;
+};
+
+struct Panel 
+{
+  uint32_t x, y;
+  uint32_t w, h;
+};
+
+struct PanelStyle
+{
+  TTF_Font* font;
+  RGBA8 fontColor;
+  uint32_t fontSize;
+  uint32_t lineSpacing;
+
+  uint32_t font_point_size;
+  uint32_t pad_left;
+  uint32_t pad_right;
+  uint32_t pad_top;
+  uint32_t pad_bottom;
+  uint32_t border_size;
+
+  RGBA8 color_background;
+  RGBA8 color_border; 
+  RGBA8 color_syntax_keyword;
+  RGBA8 color_syntax_type;
+  RGBA8 color_syntax_literal;
+};
+
+struct InputState
+{
+  int mouse_x;
+  int mouse_y;
+};
+
+struct StringBuffer
+{
+  char* memory;
+  size_t size;
+  size_t used;
+};
+
+struct Console {
+  static const size_t MAX_ENTRY_COUNT = 1024;
+
+  uint32_t entryCount;
+  const char *entries[MAX_ENTRY_COUNT];
+  StringBuffer buffer;
+};
+
+struct BreakpointInfo {
+  lldb::SBBreakpoint lldbBreakpoint;
+  const char *fileName;
+  uint32_t lineNumber;
+};
+
+struct BreakpointList {
+  BreakpointInfo breakpoints[16];
+  uint32_t breakpointCount;
+};
+
+struct GUIContext
+{
+  uint32_t screen_width;
+  uint32_t screen_height;
+
+  char active_filename[256];
+  size_t active_filename_length;
+  char *active_filedata;
+  size_t active_filesize;
+  
+  Console console;
+  BreakpointList breakpointList;
+  bool breakpointWasJustHit;
+
+  uint32_t line_offsets[10000];
+  uint32_t line_count;
+
+  uint32_t cursor_line_number;
+  uint32_t cursor_column_number;
+  float cursor_time_elapsed_since_last_blink;
+
+  uint32_t top_line_in_panel;
+  uint32_t max_lines_in_panel;
+
+  uint32_t line_execution_stopped;
+
+  uint32_t line_spacing;
+
+  Panel text_panel;
+  Panel watch_panel;
+  Panel tooltip_panel;
+  Panel output_panel;
+  
+  PanelStyle text_style;
+  PanelStyle watch_style;
+  PanelStyle output_style;
+
+  char identUnderCursor[1024];
+  StringBuffer mouseOverStringBuffer;
+  PanelStyle mouseOverPanelStyle;
+
+  bool tooltip_is_compound;
+
+  uint32_t font_size;
+
+
+  int32_t linesToScroll;
+
+  bool is_running;
+  bool requires_refresh;
+
+  //TODO(Torin) How do you want to do this?
+  //Probably move these out into an input state struct?
+  //or mabye a command struct or something?
+  bool step_over;
+  bool step_into;
+  bool step_out;
+  bool showFuzzySearch;
+  bool continueExecution;
+
+  bool cursor_down;
+  bool cursor_up;
+  bool cursor_left;
+  bool cursor_right;
+
+  SDL_Renderer *renderer;
+  SDL_Window *window;  
+  TTF_Font *font;
+
+  //GDBContext gdb;
+  
+  DebugContext debug_context;
+  bool is_debugger_executing;
+  
+  InputState input;
+};
+
+static GUIContext _ctx = {};
+
+static inline 
+void AppendToStringBuffer(const char *str, const size_t length, StringBuffer *buffer) {
+  assert(buffer->used + length < buffer->size);
+  memcpy(&buffer->memory[buffer->used], str, length);
+  buffer->used += length;
+}
+
+static inline 
+void AppendCharToStringBuffer(const char c, StringBuffer *buffer) {
+  assert(buffer->used + 1 < buffer->size);
+  buffer->memory[buffer->used] = c;
+  buffer->used += 1;
+}
+
+static inline 
+void ClearStringBuffer(StringBuffer *buffer) {
+  memset(buffer->memory, 0, buffer->size);
+  buffer->used = 0;
+}
+
+#define AppendLiteralToStringBuffer(literal, buffer) \
+  AppendToStringBuffer(literal, literal_strlen(literal), buffer)
+
+static inline int is_point_in_panel(Panel* panel, int x, int y)
+{
+  if ((int)panel->x > x || (int)panel->y > y) return 0;
+  if ((int)(panel->x + panel->w) < x) return 0;
+  if ((int)(panel->y + panel->h) < y) return 0;
+  return 1;
+}
+
+static inline int is_point_in_panel_text_region(Panel *panel, const PanelStyle& style, int x, int y)
+{
+  if ((int)(panel->x + style.pad_left + style.border_size) > x) return 0;
+  if ((int)(panel->y + style.pad_bottom + style.border_size) > y) return 0;
+  if ((int)(panel->x + panel->w - style.pad_right - style.border_size) < x) return 0;
+  if ((int)(panel->y + panel->h - style.pad_top - style.border_size) < y) return 0;
+  return 1;
+}
+
+static inline void screen_to_panel_text_region_coordinates(Panel *panel, const PanelStyle& style, const int screen_x, const int screen_y, int *out_x, int *out_y)
+{
+  *out_x = screen_x - (panel->x + style.pad_left + style.border_size) ;
+  *out_y = screen_y - (panel->y + style.pad_right + style.border_size);
+}
+
+
+static inline void gui_goto_line(GUIContext *context, uint32_t line_number);
+static inline void gui_draw_panel(GUIContext* context, Panel *panel, const PanelStyle& style);
+static inline void GUIShowFuzzySearch(GUIContext *context);
+
+void ToggleBreakpointAtLine(GUIContext *context, const uint32_t requestedLineNumber) {
+  BreakpointList& bpList = context->breakpointList;
+  for (uint32_t i = 0; i < bpList.breakpointCount; i++) {
+    BreakpointInfo& bpInfo = bpList.breakpoints[i];
+    if (bpInfo.lineNumber == requestedLineNumber) {
+      bpInfo.lldbBreakpoint.ClearAllBreakpointSites();
+      context->debug_context.target.BreakpointDelete(bpInfo.lldbBreakpoint.GetID());
+      log_info("breakpoint-removed at line %u", requestedLineNumber);
+      if (bpList.breakpointCount > 1 && (i < (bpList.breakpointCount-1))) {
+        bpList.breakpoints[i] = bpList.breakpoints[bpList.breakpointCount - 1];
+      } else {
+        bpList.breakpoints[i] = {};
+      }
+      bpList.breakpointCount--;
+      return;
+    }
+  }
+
+  assert(bpList.breakpointCount + 1 < ARRAYCOUNT(BreakpointList::breakpoints));
+   lldb::SBBreakpoint lldbBreakpoint = 
+     context->debug_context.target.BreakpointCreateByLocation
+     (context->active_filename, requestedLineNumber);
+  
+   if (lldbBreakpoint.IsValid()) {
+    BreakpointInfo& bpInfo = bpList.breakpoints[bpList.breakpointCount];
+    lldb::SBBreakpointLocation bpLocation = lldbBreakpoint.GetLocationAtIndex(0);
+    lldb::SBAddress addr = bpLocation.GetAddress();
+    lldb::SBLineEntry line_entry = addr.GetLineEntry();
+    lldb::SBFileSpec file_spec = line_entry.GetFileSpec();
+    uint32_t line_number = line_entry.GetLine();
+    if (line_number != requestedLineNumber) {
+      bpInfo.lldbBreakpoint.ClearAllBreakpointSites();
+      context->debug_context.target.BreakpointDelete(bpInfo.lldbBreakpoint.GetID());
+      log_info("could not created breakpoint at line %u", requestedLineNumber);
+    } else {
+      bpList.breakpoints[bpList.breakpointCount].lldbBreakpoint = lldbBreakpoint;
+      bpList.breakpoints[bpList.breakpointCount].lineNumber = line_number;
+      bpList.breakpointCount++;
+      log_info("created breakpoint at lineNumber %u", line_number);
+    }
+  } else {
+    log_info("breakpoint is invalid\n");
+  }
+
+
+}
+
+
+
+//TODO(Torin) consider changing the name of this function to set active file
+static inline
+void gui_open_file(GUIContext *context, const char *filename, size_t filename_length)
+{
+  //TODO(Torin) Consider changing this into a stringbuffer
+  assert(filename_length < ARRAYCOUNT(context->active_filename));
+  context->active_filename_length = filename_length;
+  memcpy(context->active_filename, filename, filename_length);
+  context->active_filename[filename_length] = 0;
+
+  //We assume that if the file is not found this is an internal error because all the paths
+  //should have been confirmed to be valid before now
+  //TODO(Torin) add a more robust error checking on this file
+  FILE *file = fopen(context->active_filename, "rb");
+  if (!file) assert(false);
+  fseek(file, 0, SEEK_END);
+  context->active_filesize = ftell(file);
+  fseek(file, 0, SEEK_SET);
+
+  //TODO(Torin) Make check to see if the current buffer is big enough to hold the
+  //new filedata the we require to avoid calling malloc
+  if (context->active_filedata != nullptr)
+    free(context->active_filedata);
+  context->active_filedata = (char *)malloc(context->active_filesize + 1);
+  context->active_filedata[context->active_filesize] = 0;
+  fread(context->active_filedata, 1, context->active_filesize, file);
+  fclose(file);
+
+  char *current = context->active_filedata;
+  uint32_t current_offset = 0;
+  context->line_offsets[0] = 0;
+  context->line_count++;
+  while (current[current_offset] != 0) {
+    if (current[current_offset] == '\n') {
+      context->line_offsets[context->line_count] = current_offset + 1;
+      context->line_count++;
+    }
+    current_offset++;
+  }
+
+  //NOTE(Torin) bad if file is empy but it doesnt matter beacause if we break in the file
+  //its imposible that its empty //TODO(Torin) unless the file has been modified and the line count
+  //no longer coresponds to the line count in the binary in which case the program would crash
+  context->line_offsets[context->line_count] = context->line_offsets[context->line_count - 1];
+  context->top_line_in_panel = 1;
+}
+
+static inline
+uint32_t gui_get_line_number_at_mouse(GUIContext *context) {
+  int text_x, text_y;
+  Panel *panel = &context->text_panel;
+  screen_to_panel_text_region_coordinates(panel, context->text_style, 
+      context->input.mouse_x, context->input.mouse_y, &text_x, &text_y);
+
+  int line_height = context->line_spacing + context->font_size;
+  int line_number = text_y / line_height;
+  line_number += context->top_line_in_panel;
+  return line_number;
+}
+
+static inline int gui_get_ident_under_point(GUIContext *context, 
+  int pointX, int pointY, char *dest, size_t destSize) 
+{
+
+  Panel *panel = &context->text_panel;
+  if (!is_point_in_panel_text_region(panel, 
+    context->text_style, pointX, pointY)) {
+    return 0;
+  }
+
+  int text_x, text_y;
+  screen_to_panel_text_region_coordinates(panel, context->text_style, 
+      pointX, pointY, &text_x, &text_y);
+
+  int line_height = context->line_spacing + context->font_size;
+  int line_number = text_y / line_height;
+  line_number += context->top_line_in_panel - 1;
+
+  if (line_number < (int)context->line_count) {
+    int line_length = context->line_offsets[line_number + 1] -
+      context->line_offsets[line_number];
+
+    char *line_begin = context->active_filedata + context->line_offsets[line_number];
+    char *current = line_begin;
+    int total_width = 0;
+
+    char *write_pos = dest;
+
+    while ((current - line_begin) < line_length) {
+      if (*current == '.') {
+        assert((size_t)((write_pos + 1) - dest) < destSize);
+        memcpy(write_pos, current, 1);
+        write_pos[1] = 0;
+        current++;
+        int text_width, text_height;
+        TTF_SizeText(context->font, write_pos, &text_width, &text_height);
+        write_pos += 1;
+        total_width += text_width;
+        if (total_width > text_x) {
+          memset(dest, 0, destSize);
+          return 0;
+        }
+      }
+
+      else if ((*current == '-' && *(current + 1) == '>')) {
+        assert((size_t)((write_pos + 2) - dest) < destSize);
+        memcpy(write_pos, current, 2);
+        write_pos[2] = 0;
+        int text_width, text_height;
+        TTF_SizeText(context->font, write_pos, &text_width, &text_height);
+        write_pos += 2;
+        current += 2;
+        total_width += text_width;
+        if (total_width > text_x) {
+          memset(dest, 0, destSize);
+          return 0;
+        }
+      }
+
+      else if (isalpha(*current) || *current == '_') {
+        char *ident_begin = current;
+        while (isalnum(*current) || *current == '_')
+          current++;
+        size_t ident_length = current - ident_begin;
+        assert((size_t)((write_pos + ident_length) - dest) < destSize);
+        memcpy(write_pos, ident_begin, ident_length);
+        write_pos[ident_length] = 0;
+        int text_width, text_height;
+        TTF_SizeText(context->font, write_pos, &text_width, &text_height);
+        write_pos += ident_length;
+        total_width += text_width;
+        if (total_width > text_x) {
+          return 1;
+        }
+      }
+
+      else {
+        write_pos = dest;
+        char *text_begin = current;
+        if (isspace(*current)) {
+          while (isspace(*current))
+            current++;
+        } else if (isdigit(*current)) {
+          while (!isspace(*current))
+            current++;
+        } else {
+          current++;
+        }
+
+        size_t text_length = current - text_begin;
+        memcpy(write_pos, text_begin, text_length);
+        write_pos[text_length] = 0;
+
+        int text_width, text_height;
+        TTF_SizeText(context->font, dest, &text_width, &text_height);
+        total_width += text_width;
+
+        if (total_width > text_x) {
+          memset(dest, 0, destSize);
+          return 0;
+        }
+      }
+    }
+  }
+  return 0;
+}
+
+static inline
+void GUIShowFuzzySearch(GUIContext *context)
+{
+  DebugContext& lldbContext = context->debug_context;
+  lldb::SBModule module = lldbContext.target.GetModuleAtIndex(0);
+  uint32_t symbolCount = module.GetNumSymbols();
+  for (uint32_t i = 0; i < symbolCount; i++) {
+    lldb::SBSymbol symbol = module.GetSymbolAtIndex(i);
+    const char *name = symbol.GetName();
+    printf("function: %s\n", name);
+  }
+}
+
+static inline
+void gui_highlight_line(GUIContext* context, uint32_t lineNumber, RGBA8 color) {
+  if (lineNumber < context->top_line_in_panel || 
+      lineNumber > context->top_line_in_panel + context->max_lines_in_panel) {
+    return;
+  }
+
+  Panel *panel = &context->text_panel;
+  const PanelStyle& style = context->text_style;
+  int line_height = context->line_spacing + context->font_size;
+  int screenPosY = (line_height * (lineNumber - context->top_line_in_panel)) + 
+    style.pad_top + style.border_size + 2;
+
+  SDL_Rect highlight_rect = {
+    (int)(panel->x + style.border_size),
+    screenPosY,
+    (int)(panel->w - style.border_size),
+    line_height
+  };
+            
+  SDL_SetRenderDrawColor(context->renderer, color.r, color.g, color.b, color.a);
+  SDL_RenderFillRect(context->renderer, &highlight_rect);
+}
+
+static inline
+int copy_line_to_buffer(GUIContext* context, uint32_t lineNumber, char *buffer, size_t bufferLength) 
+{
+  assert(lineNumber < context->line_count);
+  uint32_t lineIndex = lineNumber - 1;
+
+  uint32_t lineOffsetA = context->line_offsets[lineIndex];
+  uint32_t lineOffsetB = context->line_offsets[lineIndex+1];
+  const char *lineData = context->active_filedata + lineOffsetA;
+  uint32_t lineLength = lineOffsetB - lineOffsetA;
+  //NOTE(Torin) This is to remove the newline char since we are storing
+  //the offset into the filebuffer rather than lineLengths directly
+  //TODO(Torin) This will break with non unix line endings
+  //consider just storing the length and a pointer upfront with each line entry
+  if (lineLength > 0) {
+    lineLength--;
+  }
+
+  size_t bufferIndex = 0;
+  for (uint32_t i = 0; i < lineLength; i++) {
+    if (lineData[i] == '\t') {
+      buffer[bufferIndex] = ' ';
+      buffer[bufferIndex+1] = ' ';
+      bufferIndex += 2;
+      if (bufferIndex > bufferLength) {
+        return 0;
+      }
+    } else {
+      buffer[bufferIndex] = lineData[i];
+      bufferIndex++;
+      if (bufferIndex > bufferLength) {
+        return 0;
+      }
+    }
+  } 
+  buffer[bufferIndex] = 0;
+  return 1;
+}
+
+
+static inline
+void gui_render_buffer(GUIContext *context)
+{
+  Panel *panel = &context->text_panel;
+  const PanelStyle& style = context->text_style;
+  gui_draw_panel(context, panel, context->text_style);
+
+
+  { //Draw breakpoints
+    
+    BreakpointList& bpList = context->breakpointList;
+    for (uint32_t i = 0; i < bpList.breakpointCount; i++) {
+      BreakpointInfo& info = bpList.breakpoints[i];
+      if (info.lineNumber > context->top_line_in_panel &&
+          info.lineNumber < (context->top_line_in_panel + context->max_lines_in_panel)) {
+        gui_highlight_line(context, info.lineNumber, RGBA8 { 200, 20, 20, 30 });
+      }
+    }
+  }
+
+  if (context->is_debugger_executing == false) {
+    if (context->breakpointWasJustHit) {
+      gui_highlight_line(context, context->line_execution_stopped, 
+        RGBA8 { 160, 140, 20, 30 });
+    } else {
+      gui_highlight_line(context, context->line_execution_stopped, 
+        RGBA8 { 20, 140, 20, 30 });
+    }
+  }
+  
+  SDL_Color color = { 215, 215, 215, 255 };
+  uint32_t line_count_to_render = min(context->max_lines_in_panel, context->line_count);
+  
+  for (uint32_t i = 0; i < line_count_to_render; i++) {
+    uint32_t lineNumber = context->top_line_in_panel + i;
+    char line_buffer[512];
+    copy_line_to_buffer(context, lineNumber, line_buffer, ARRAYCOUNT(line_buffer)); 
+
+    uint32_t verticalDisplacementPerLine = context->line_spacing + context->font_size;
+    if (line_buffer[0] != 0) {
+      SDL_Surface *text_surface = TTF_RenderText_Solid(context->font, line_buffer, color);
+      SDL_Rect text_rect = {
+          (int)(style.border_size + style.pad_left),
+          (int)((i * verticalDisplacementPerLine) + style.border_size + (int)style.pad_top),
+          text_surface->w,
+          text_surface->h
+      };
+
+      SDL_Texture *text_texture = SDL_CreateTextureFromSurface(context->renderer, text_surface);
+      SDL_RenderCopy(context->renderer, text_texture, NULL, &text_rect);
+      SDL_DestroyTexture(text_texture);
+      SDL_FreeSurface(text_surface);
+    }
+  }
+}
+
+static inline
+void gui_update_input(GUIContext *context)
+{
+  SDL_Event event;
+  while (SDL_PollEvent(&event))
+  {
+    switch(event.type)
+    {
+        case SDL_QUIT:
+        {
+            context->is_running = false;
+        } break;
+
+        case SDL_KEYDOWN:
+        {
+            if(event.key.keysym.sym == SDLK_a)
+            {
+                context->step_over = true;
+            }
+            else if (event.key.keysym.sym == SDLK_s)
+            {
+                context->step_into = true;
+            }
+             else if (event.key.keysym.sym == SDLK_j)
+            {
+              context->linesToScroll += 1;
+            }
+            else if (event.key.keysym.sym == SDLK_k)
+            {
+              context->linesToScroll -= 1;
+            }
+
+            else if (event.key.keysym.sym == SDLK_c) {
+              context->continueExecution = true;
+            }
+
+            else if (event.key.keysym.sym == SDLK_p) {
+              if (event.key.keysym.mod & (KMOD_CTRL)) {
+                context->showFuzzySearch = true;
+              }
+            }
+
+        } break;
+
+        case SDL_MOUSEMOTION:
+        {
+          int mouse_x = event.motion.x;
+          int mouse_y = event.motion.y;
+          context->input.mouse_x = mouse_x;
+          context->input.mouse_y = mouse_y;
+        } break;
+
+        case SDL_MOUSEWHEEL: 
+        {
+          context->linesToScroll -= (event.wheel.y * 2);
+        } break;
+
+        case SDL_MOUSEBUTTONDOWN:
+        {
+          uint32_t keymod = SDL_GetModState(); 
+          if (keymod & KMOD_CTRL) {
+            ToggleBreakpointAtLine(context, gui_get_line_number_at_mouse(context));
+          }
+
+        } break;
+    }
+  }
+}
+
+static inline
+void gui_draw_panel(GUIContext* context, Panel *panel, const PanelStyle& style)
+{
+  SDL_Rect panel_border_rect = {
+    (int)(panel->x),
+    (int)(panel->y),
+    (int)(panel->w),
+    (int)(panel->h),
+  };
+
+  SDL_Rect panel_background_rect = {
+    (int)(panel->x + style.border_size),
+    (int)(panel->y + style.border_size),
+    (int)(panel->w - (style.border_size * 2)),
+    (int)(panel->h - (style.border_size * 2)),
+  };
+  
+  SDL_Rect panel_content_rect = {
+    (int)(panel->x + style.pad_left + style.border_size),
+    (int)(panel->y + style.pad_bottom + style.border_size),
+    (int)(panel->w - style.pad_right - style.pad_left - (style.border_size * 2)),
+    (int)(panel->h - style.pad_top   - style.pad_bottom - (style.border_size * 2)),
+  };
+
+    SDL_SetRenderDrawColor(context->renderer,
+                           style.color_border.r,
+                           style.color_border.g,
+                           style.color_border.b,
+                           style.color_border.a);
+    SDL_RenderFillRect(context->renderer, &panel_border_rect);
+    SDL_SetRenderDrawColor(context->renderer,
+                           style.color_background.r,
+                           style.color_background.g,
+                           style.color_background.b,
+                           255);
+    SDL_RenderFillRect(context->renderer, &panel_background_rect);
+}
+
+static inline
+void gui_goto_line(GUIContext *context, uint32_t line_number)
+{
+  int center_of_panel = (int)context->max_lines_in_panel / 2;
+  int requested_top_line = (int)line_number - center_of_panel;
+  int max_top_line_possible = context->line_count - context->max_lines_in_panel;
+  if (max_top_line_possible < 1) 
+    max_top_line_possible = 1;
+
+  if (requested_top_line < 1)
+    requested_top_line = 1;
+  else if (requested_top_line > max_top_line_possible)
+    requested_top_line = max_top_line_possible;  
+
+  context->top_line_in_panel = requested_top_line;
+}
+
+static inline
+void gui_set_top_line(GUIContext *context, int line_number) {
+  if (line_number < 1) {
+    line_number = 1;
+  } else {
+    line_number = min(line_number, 
+      context->line_count - context->max_lines_in_panel);    
+  }
+  context->top_line_in_panel = line_number;
+}
+
+static inline
+void gui_process_input(GUIContext *context) 
+{
+  if (context->linesToScroll) {
+    gui_set_top_line(context, context->top_line_in_panel + context->linesToScroll);
+    context->linesToScroll = 0;
+  }
+  
+  if (context->step_over) {
+    // write_literal(context->gdb.output_pipe, "next\n");
+    lldb_step_over(&context->debug_context);
+    context->is_debugger_executing = true;
+    context->breakpointWasJustHit = false;
+  }
+
+  if (context->step_into){
+    //write_literal(context->gdb.output_pipe, "step\n");
+    lldb_step_into(&context->debug_context);
+    context->is_debugger_executing = true;
+    context->breakpointWasJustHit = false;
+  }
+
+  if (context->continueExecution) {
+    lldb_continue_execution(&context->debug_context);
+    context->is_debugger_executing = true;
+    context->breakpointWasJustHit = false;
+  }
+}
+
+//TODO(Torin) Make this a control struct
+//and reset the entire thing
+static inline
+void gui_reset_input(GUIContext *context)
+{
+  context->cursor_up = false;
+  context->cursor_down = false;
+  context->step_into = false;
+  context->step_over =false;
+  context->continueExecution = false;
+}
+
+static inline
+void InitStringBuffer(StringBuffer *buffer, size_t size) {
+  buffer->used = 0;
+  buffer->size = size;
+  buffer->memory = (char *)malloc(size);
+}
+
+#define FONT_FILE "/usr/share/fonts/TTF/DejaVuSans.ttf"
+
+static inline
+void gui_initalize(GUIContext *context)
+{
+  context->screen_width = 1280;
+  context->screen_height = 720;
+  SDL_Init(SDL_INIT_VIDEO);
+  if (TTF_Init() == -1)
+    LOG_ERROR("TFF Failed to initalize, %s", TTF_GetError());
+  context->font = TTF_OpenFont(FONT_FILE, context->font_size);
+  if (context->font == NULL)
+    LOG_ERROR("Failed to open font: %s", TTF_GetError());
+  context->window = SDL_CreateWindow("GDBFrontend",
+    SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 720, 0);
+  context->renderer = SDL_CreateRenderer(context->window, -1, 0);
+
+  //TODO(Torin) Revert mouseOver size back to somthing sane
+  InitStringBuffer(&context->mouseOverStringBuffer, 1024*1024*4);
+  InitStringBuffer(&context->console.buffer, 1024*1024);
+  
+  context->font_size = 14;
+  context->line_spacing = 1;
+
+  Panel *panel = &context->text_panel;
+  context->text_panel.w = 1280 / 2;
+  context->text_panel.h = 720;
+
+  context->output_panel.x = 1280/2;
+  context->output_panel.y = 0;
+  context->output_panel.w = 1280/2;
+  context->output_panel.h = 720/2;
+
+  PanelStyle commonStyle = {};
+  commonStyle.font = context->font;
+  commonStyle.fontSize = 14;
+  commonStyle.fontColor = { 255, 255, 255, 255 };
+  commonStyle.border_size = 2;
+  commonStyle.pad_left = 2;
+  commonStyle.pad_right = 2;
+  commonStyle.pad_top = 2;
+  commonStyle.pad_bottom = 2;
+  commonStyle.color_background = { 40, 40, 40, 255 };
+  commonStyle.color_border = { 200, 200, 200, 255 };
+
+  context->text_style = commonStyle;
+  context->output_style = commonStyle;
+  context->mouseOverPanelStyle = commonStyle;
+
+  context->max_lines_in_panel = panel->h / (context->font_size + context->line_spacing);
+  context->is_running = true;
+}
+
+static void 
+internal_lldb_process_events(GUIContext *context) {
+  DebugContext *debug_context = &context->debug_context;
+  
+  lldb::StateType process_state = debug_context->process.GetState();
+  if (process_state != debug_context->current_process_state 
+    || debug_context->is_executing != context->is_debugger_executing) {
+      
+    switch(process_state) {
+      //@Running @Process
+      case lldb::eStateRunning: {
+        log_info("state: running");
+        debug_context->is_executing = true;
+      } break;
+      
+      //@Stopped @Process 
+      case lldb::eStateStopped: {
+        lldb::SBThread thread = debug_context->process.GetSelectedThread();
+        lldb::StopReason stop_reason = thread.GetStopReason();
+
+        static auto updateStopInfo = [](GUIContext *context, const lldb::SBLineEntry lineEntry, const lldb::SBFileSpec fileSpec) {
+          uint32_t line_number = lineEntry.GetLine();
+          char temp[1024];
+          uint32_t bytesRequired = fileSpec.GetPath(temp, ARRAYCOUNT(context->active_filename));
+          if (bytesRequired > ARRAYCOUNT(context->active_filename)) {
+            assert(false);
+          }
+
+          if (temp[0] != 0) {
+            if (strcmp(temp, context->active_filename)) {
+              gui_open_file(context, temp, strlen(temp));
+            }
+            if (context->line_execution_stopped != line_number) {
+              gui_goto_line(context, line_number);
+              context->line_execution_stopped = line_number;
+              context->requires_refresh = true;
+            }
+          }
+        };
+        
+        if (stop_reason == lldb::eStopReasonBreakpoint) {
+          if (thread.GetStopReasonDataCount() > 0) {
+            debug_context->current_process_state = process_state;
+            context->is_debugger_executing = false;
+            
+            uint64_t bp_id = thread.GetStopReasonDataAtIndex(0);
+            lldb::SBBreakpoint breakpoint = debug_context->target.FindBreakpointByID(bp_id);
+            lldb::SBBreakpointLocation location = breakpoint.GetLocationAtIndex(0);
+            lldb::SBAddress addr = location.GetAddress();
+            lldb::SBFunction func = addr.GetFunction();
+            
+            lldb::SBLineEntry line_entry = addr.GetLineEntry();
+            lldb::SBFileSpec fileSpec = line_entry.GetFileSpec();
+            updateStopInfo(context, line_entry, fileSpec);
+            context->breakpointWasJustHit = true;
+          }
+        }
+        
+        else { //End step range
+          debug_context->current_process_state = process_state;
+          context->is_debugger_executing = false;
+          lldb::SBFrame frame = thread.GetSelectedFrame();
+
+          lldb::SBLineEntry line_entry = frame.GetLineEntry();
+          lldb::SBFileSpec file_spec = line_entry.GetFileSpec();
+          updateStopInfo(context, line_entry, file_spec);
+        }
+        
+      } break;
+      
+      case lldb::eStateExited: {
+        debug_context->current_process_state = process_state;
+        context->is_debugger_executing = false;
+        log_info("state: exited");
+        lldb::SBThread thread = debug_context->process.GetSelectedThread();  
+        lldb::SBFrame frame = thread.GetSelectedFrame();
+        
+        lldb::SBLineEntry line_entry = frame.GetLineEntry();
+        lldb::SBFileSpec file_spec = line_entry.GetFileSpec();
+
+        uint32_t line_number = line_entry.GetLine();
+        const char *filename = file_spec.GetFilename();
+        log_info("stopped-exited");
+              
+        if (context->line_execution_stopped != line_number) {
+          gui_goto_line(context, line_number);
+          context->line_execution_stopped = line_number;
+          context->requires_refresh = true;
+        }
+      } break;
+    }
+  }
+}
+
+void CreateBreakpoint(GUIContext *context, const char *expr) {
+  BreakpointList& bpList = context->breakpointList;
+  assert(bpList.breakpointCount + 1 < ARRAYCOUNT(BreakpointList::breakpoints));
+  lldb::SBBreakpoint lldbBreakpoint;
+  bool breakpointWasCreated = false;
+  uint32_t requestedLineNumber = 0;
+
+  char temp[256];
+  const char *current = expr;
+  while (*current != 0) {
+    if (*current == ':') {
+      size_t filenameLength = current - expr;
+      assert(filenameLength + 1< ARRAYCOUNT(temp));
+      memcpy(temp, expr, filenameLength);
+      temp[filenameLength] = 0;
+      const char *filename = temp;
+      uint32_t lineNumber = std::stoi(current + 1);
+      lldbBreakpoint = context->debug_context.target.
+        BreakpointCreateByLocation(filename, lineNumber);
+      breakpointWasCreated = true;
+      requestedLineNumber = lineNumber;
+      break;
+    }
+    current++;
+  }
+
+  if (!breakpointWasCreated) {
+    assert(false);
+    //lldbBreakpoint = context->debug_context.target.BreakpointCreateByName
+     //(context->active_filename, requestedLineNumber);
+  } 
+
+   if (lldbBreakpoint.IsValid()) {
+    BreakpointInfo& bpInfo = bpList.breakpoints[bpList.breakpointCount];
+    lldb::SBBreakpointLocation bpLocation = lldbBreakpoint.GetLocationAtIndex(0);
+    lldb::SBAddress addr = bpLocation.GetAddress();
+    lldb::SBLineEntry line_entry = addr.GetLineEntry();
+    lldb::SBFileSpec file_spec = line_entry.GetFileSpec();
+    uint32_t line_number = line_entry.GetLine();
+    if (line_number != requestedLineNumber) {
+      bpInfo.lldbBreakpoint.ClearAllBreakpointSites();
+      context->debug_context.target.BreakpointDelete(bpInfo.lldbBreakpoint.GetID());
+      log_info("could not created breakpoint at line %u", requestedLineNumber);
+    } else {
+      bpList.breakpoints[bpList.breakpointCount].lldbBreakpoint = lldbBreakpoint;
+      bpList.breakpoints[bpList.breakpointCount].lineNumber = line_number;
+      bpList.breakpointCount++;
+      log_info("created breakpoint at lineNumber %u", line_number);
+    }
+  } else {
+    log_info("breakpoint is invalid\n");
+  }
+}
+
+static void
+DrawConsole(GUIContext *context, const Panel& panel, const PanelStyle& style) {
+  const Console& console = context->console;
+  uint32_t verticalDisplacementPerLine = style.lineSpacing + style.fontSize; 
+  for (uint32_t i = 0; i < console.entryCount; i++) {
+    const char *entryText = console.entries[i];
+    SDL_Color sdlColor = { style.fontColor.r, style.fontColor.g, 
+      style.fontColor.b, style.fontColor.a };
+    SDL_Surface *text_surface = TTF_RenderText_Solid(style.font, entryText,
+       sdlColor); 
+
+    SDL_Rect text_rect = {
+      (int)(style.border_size + style.pad_left),
+      (int)((i * verticalDisplacementPerLine) + style.border_size + (int)style.pad_top),
+      text_surface->w,
+      text_surface->h
+    };
+
+    SDL_Texture *text_texture = 
+      SDL_CreateTextureFromSurface(context->renderer, text_surface);
+    SDL_RenderCopy(context->renderer, text_texture, NULL, &text_rect);
+    SDL_DestroyTexture(text_texture);
+    SDL_FreeSurface(text_surface);
+  }
+}
+
+int main(int argc, char **argv)
+{
+  if (argc < 2) {
+      printf("debugger must be run with an argument\n");
+      return 1;
+  }
+
+  enum CommandType {
+    CommandType_SET_BREAKPOINT 
+  };
+
+  struct Command {
+    CommandType type;
+    const char *arg;
+  };
+
+  Command commands[argc];
+  uint32_t commandCount = 0;
+  uint32_t executableNameIndex = 0;
+  for (int i = 1; i < argc; i++) {
+    const char *current = argv[i];
+    if (*current == '-') {
+      current++;
+      if (*current == 'b') {
+        current++;
+        while(isspace(*current)) {
+          current++;
+        }
+        commands[commandCount].arg = current;
+        commands[commandCount].type = CommandType_SET_BREAKPOINT;
+        commandCount++;
+      } else {
+        log_error("Invalid command line paramater");
+        return 1;
+      }
+    } else {
+      executableNameIndex = i;
+      break;
+    }
+  }
+  
+   
+  const char *executable_path = argv[executableNameIndex]; 
+  FILE *executableFileHandle = fopen(executable_path, "rb");
+  if (executableFileHandle == NULL) {
+    printf("[ERROR] Could not find the provide executable filepath\n");
+    return 1;
+  }
+ 
+  const char *executable_arguments = NULL;
+  if (executableNameIndex + 1 < (uint32_t)argc) {
+    executable_arguments = argv[executableNameIndex + 1];
+  }
+
+  GUIContext& context = _ctx;
+
+  gui_initalize(&context);
+  lldb_initialize(&context.debug_context, executable_path);
+
+  bool wasBreakpointSet = false;
+  for (uint32_t i = 0; i < commandCount; i++) {
+    Command& command = commands[i];
+    if (command.type == CommandType_SET_BREAKPOINT) {
+      CreateBreakpoint(&context, command.arg);
+      wasBreakpointSet = true;
+    }
+  } 
+
+  if (!wasBreakpointSet) {
+    lldb_create_breakpoint(&context.debug_context, "main");
+  }
+
+  lldb_run_executable(&context.debug_context, &executable_arguments);
+  
+  while (context.is_running) {
+    gui_update_input(&context);
+    internal_lldb_process_events(&context);
+    gui_process_input(&context);
+
+    char test[1024];
+    memset(test, 0, 1024);
+    size_t bytesWritten = context.debug_context.process.GetSTDOUT(test, 1024);
+    if (test[0]) {
+      AppendToStringBuffer(test, bytesWritten, &context.console.buffer);
+      printf("%s", test);
+    }
+
+#define memcpy_and_increment(writeptr, readptr, size) memcpy(writeptr, readptr, size); writeptr += size
+#define memcpy_literal_and_increment(dest, literal) memcpy(dest, literal, literal_strlen(literal)); dest+=literal_strlen(literal)
+#define memcpy_and_increment_write_ptr(writeptr, readptr, size) memcpy(writeptr, readptr, size); writeptr += size
+#define memcpy_literal_and_inceremnt_write_ptr(dest, literal) memcpy(dest, literal, literal_strlen(literal)); dest+=literal_strlen(literal)
+            
+            InputState *input = &context.input;
+            char temp[1024];
+            memcpy(temp, context.identUnderCursor, 1024);
+
+            if (gui_get_ident_under_point(&context, input->mouse_x, input->mouse_y,
+                  context.identUnderCursor, ARRAYCOUNT(context.identUnderCursor))) {
+              if (strcmp(temp, context.identUnderCursor) || context.requires_refresh) {
+                ClearStringBuffer(&context.mouseOverStringBuffer);
+                PrintInfo info = lldb_print_identifier(&context.debug_context, context.identUnderCursor);
+                context.tooltip_is_compound = info.value_count > 1;
+                for (uint32_t i = 0; i < info.value_count; i++) {
+                  PrintValue& value = info.values[i];
+                  AppendToStringBuffer(value.type_string, strlen(value.type_string), &context.mouseOverStringBuffer);
+                  AppendLiteralToStringBuffer(" ", &context.mouseOverStringBuffer);
+                  AppendToStringBuffer(value.name_string, strlen(value.name_string), &context.mouseOverStringBuffer);
+                  AppendLiteralToStringBuffer(" = ", &context.mouseOverStringBuffer);
+                  AppendToStringBuffer(value.value_string, strlen(value.value_string), &context.mouseOverStringBuffer);
+                  AppendCharToStringBuffer('\0', &context.mouseOverStringBuffer);
+                }
+                AppendCharToStringBuffer('\0', &context.mouseOverStringBuffer);
+              }
+            } else if (context.mouseOverStringBuffer.used != 0) {
+              ClearStringBuffer(&context.mouseOverStringBuffer);
+            }
+
+            { //Draw the main buffer
+              SDL_Rect screen_rect = { 0, 0, (int)context.screen_width, (int)context.screen_height };
+              SDL_RenderSetViewport(context.renderer, &screen_rect);
+              SDL_SetRenderDrawColor(context.renderer, 0, 0, 0, 0);
+              SDL_RenderClear(context.renderer);
+              if (context.active_filedata)
+                gui_render_buffer(&context);
+            }
+
+
+
+            gui_draw_panel(&context, &context.output_panel, context.output_style);
+
+
+            //@Draw the @mouseOver buffer
+            if (context.mouseOverStringBuffer.memory[0] != 0) {
+
+              //Determine the required size of the panel
+              uint32_t totalHeight = 0;
+              uint32_t maxWidth = 0;
+              {
+                const char *read_pos = context.mouseOverStringBuffer.memory;
+                while (read_pos[0] != 0) {
+                  const char *text = read_pos;
+                  while (*read_pos != 0) { 
+                    read_pos++;
+                  }
+                  int width, height;
+                  TTF_SizeText(context.font, text, &width, &height);
+                  maxWidth = max(width, maxWidth);
+                  totalHeight += context.line_spacing + context.font_size; 
+                  read_pos++;
+                }
+              }
+
+
+              const PanelStyle& style = context.mouseOverPanelStyle;
+              Panel *panel = &context.tooltip_panel;
+              
+              panel->x = input->mouse_x + 20;
+              panel->y = input->mouse_y + 20;
+              panel->w = maxWidth + (style.border_size * 4) + style.pad_left + style.pad_right; //TODO(Torin) Why is this slightly too small
+              panel->h = totalHeight + (style.border_size * 2) + style.pad_top + style.pad_bottom;
+              gui_draw_panel(&context, panel, context.mouseOverPanelStyle);
+
+              char *read_pos = context.mouseOverStringBuffer.memory;
+              int ypos = (int)(panel->y + style.border_size + style.pad_top);
+              int xoffset = 4;
+              while(read_pos[0] != 0) {
+                char *text = read_pos;
+                while(*read_pos != 0) 
+                  read_pos++;
+                size_t text_length = read_pos - text;
+                
+                SDL_Color color = { 255, 255, 255, 255 };
+                SDL_Surface *text_surface = TTF_RenderText_Solid(context.font, text, color);
+                SDL_Texture *text_texture = SDL_CreateTextureFromSurface(context.renderer, text_surface);
+                SDL_Rect dest_rect = { (int)(panel->x + style.border_size + style.pad_left) + xoffset, ypos, text_surface->w, text_surface->h }; 
+                SDL_RenderCopy(context.renderer, text_texture, NULL, &dest_rect);
+                SDL_DestroyTexture(text_texture);
+                ypos += context.line_spacing + context.font_size;
+                read_pos++;
+              }
+            }
+              
+
+
+#if 1 
+            if (context.identUnderCursor[0] != 0) {
+              SDL_Color color = { 255, 255, 255, 255 };
+              SDL_Surface *text_surface = TTF_RenderText_Solid(context.font, context.identUnderCursor, color);
+              SDL_Texture *text_texture = SDL_CreateTextureFromSurface(context.renderer, text_surface);
+              SDL_Rect dest_rect = { 640, 360, text_surface->w, text_surface->h }; 
+              SDL_RenderCopy(context.renderer, text_texture, NULL, &dest_rect);
+              SDL_DestroyTexture(text_texture);
+              SDL_FreeSurface(text_surface);
+            }
+#endif
+
+            static bool isSearchVisible = false;
+            if (context.showFuzzySearch) {
+              isSearchVisible = true;
+              context.showFuzzySearch = false;
+            }
+
+            if (isSearchVisible) {
+              GUIShowFuzzySearch(&context);
+              isSearchVisible = false;
+            }
+
+            SDL_RenderPresent(context.renderer);
+            gui_reset_input(&context);
+            context.requires_refresh = false;
+      }
+
+      TTF_Quit();
+      SDL_Quit();
+      return 0;
+  }

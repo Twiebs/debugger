@@ -1,0 +1,142 @@
+  [0x00000042]  Extended opcode 2: set Address to 0x4005f0
+  [0x0000004d]  Advance Line by 68 to 69
+  [0x00000050]  Copy
+  [0x00000051]  Set column to 19
+  [0x00000053]  Set prologue_end to true
+  [0x00000054]  Special opcode 174: advance Address by 12 to 0x4005fc and Line by 1 to 70
+  [0x00000055]  Set column to 21
+  [0x00000057]  Set is_stmt to 0
+  [0x00000058]  Special opcode 61: advance Address by 4 to 0x400600 and Line by 0 to 70
+  [0x00000059]  Set column to 25
+  [0x0000005b]  Special opcode 61: advance Address by 4 to 0x400604 and Line by 0 to 70
+  [0x0000005c]  Set column to 23
+  [0x0000005e]  Special opcode 61: advance Address by 4 to 0x400608 and Line by 0 to 70
+  [0x0000005f]  Set column to 33
+  [0x00000061]  Special opcode 61: advance Address by 4 to 0x40060c and Line by 0 to 70
+  [0x00000062]  Set column to 35
+  [0x00000064]  Special opcode 61: advance Address by 4 to 0x400610 and Line by 0 to 70
+  [0x00000065]  Set column to 39
+  [0x00000067]  Special opcode 75: advance Address by 5 to 0x400615 and Line by 0 to 70
+  [0x00000068]  Set column to 37
+  [0x0000006a]  Special opcode 61: advance Address by 4 to 0x400619 and Line by 0 to 70
+  [0x0000006b]  Set column to 30
+  [0x0000006d]  Special opcode 75: advance Address by 5 to 0x40061e and Line by 0 to 70
+  [0x0000006e]  Set column to 47
+  [0x00000070]  Special opcode 61: advance Address by 4 to 0x400622 and Line by 0 to 70
+  [0x00000071]  Set column to 49
+  [0x00000073]  Special opcode 61: advance Address by 4 to 0x400626 and Line by 0 to 70
+  [0x00000074]  Set column to 53
+  [0x00000076]  Special opcode 75: advance Address by 5 to 0x40062b and Line by 0 to 70
+  [0x00000077]  Set column to 51
+  [0x00000079]  Special opcode 61: advance Address by 4 to 0x40062f and Line by 0 to 70
+  [0x0000007a]  Set column to 44
+  [0x0000007c]  Special opcode 75: advance Address by 5 to 0x400634 and Line by 0 to 70
+  [0x0000007d]  Set column to 9
+  [0x0000007f]  Special opcode 61: advance Address by 4 to 0x400638 and Line by 0 to 70
+  [0x00000080]  Set column to 10
+  [0x00000082]  Set is_stmt to 1
+  [0x00000083]  Special opcode 76: advance Address by 5 to 0x40063d and Line by 1 to 71
+  [0x00000084]  Set column to 3
+  [0x00000086]  Set is_stmt to 0
+  [0x00000087]  Special opcode 75: advance Address by 5 to 0x400642 and Line by 0 to 71
+  [0x00000088]  Set column to 0
+  [0x0000008a]  Set is_stmt to 1
+  [0x0000008b]  Special opcode 205: advance Address by 14 to 0x400650 and Line by 4 to 75
+  [0x0000008c]  Set column to 6
+  [0x0000008e]  Set prologue_end to true
+  [0x0000008f]  Special opcode 230: advance Address by 16 to 0x400660 and Line by 1 to 76
+  [0x00000090]  Advance PC by constant 17 to 0x400671
+  [0x00000091]  Special opcode 76: advance Address by 5 to 0x400676 and Line by 1 to 77
+  [0x00000092]  Set column to 23
+  [0x00000094]  Advance PC by constant 17 to 0x400687
+  [0x00000095]  Special opcode 77: advance Address by 5 to 0x40068c and Line by 2 to 79
+  [0x00000096]  Set column to 9
+  [0x00000098]  Set is_stmt to 0
+  [0x00000099]  Special opcode 75: advance Address by 5 to 0x400691 and Line by 0 to 79
+  [0x0000009a]  Set column to 16
+  [0x0000009c]  Set is_stmt to 1
+  [0x0000009d]  Special opcode 77: advance Address by 5 to 0x400696 and Line by 2 to 81
+  [0x0000009e]  Set column to 14
+  [0x000000a0]  Set is_stmt to 0
+  [0x000000a1]  Special opcode 75: advance Address by 5 to 0x40069b and Line by 0 to 81
+  [0x000000a2]  Set column to 1
+  [0x000000a4]  Set is_stmt to 1
+  [0x000000a5]  Special opcode 76: advance Address by 5 to 0x4006a0 and Line by 1 to 82
+  [0x000000a6]  Set column to 0
+  [0x000000a8]  Advance Line by 14 to 96
+  [0x000000aa]  Special opcode 229: advance Address by 16 to 0x4006b0 and Line by 0 to 96
+  [0x000000ab]  Set column to 22
+  [0x000000ad]  Set prologue_end to true
+  [0x000000ae]  Advance PC by 120 to 0x400728
+  [0x000000b0]  Special opcode 7: advance Address by 0 to 0x400728 and Line by 2 to 98
+  [0x000000b1]  Set column to 20
+  [0x000000b3]  Set is_stmt to 0
+  [0x000000b4]  Special opcode 215: advance Address by 15 to 0x400737 and Line by 0 to 98
+  [0x000000b5]  Set column to 22
+  [0x000000b7]  Set is_stmt to 1
+  [0x000000b8]  Special opcode 202: advance Address by 14 to 0x400745 and Line by 1 to 99
+  [0x000000b9]  Set column to 20
+  [0x000000bb]  Set is_stmt to 0
+  [0x000000bc]  Advance PC by constant 17 to 0x400756
+  [0x000000bd]  Special opcode 19: advance Address by 1 to 0x400757 and Line by 0 to 99
+  [0x000000be]  Set column to 19
+  [0x000000c0]  Set is_stmt to 1
+  [0x000000c1]  Special opcode 202: advance Address by 14 to 0x400765 and Line by 1 to 100
+  [0x000000c2]  Set column to 17
+  [0x000000c4]  Set is_stmt to 0
+  [0x000000c5]  Special opcode 215: advance Address by 15 to 0x400774 and Line by 0 to 100
+  [0x000000c6]  Set column to 5
+  [0x000000c8]  Set is_stmt to 1
+  [0x000000c9]  Special opcode 204: advance Address by 14 to 0x400782 and Line by 3 to 103
+  [0x000000ca]  Set column to 7
+  [0x000000cc]  Special opcode 214: advance Address by 15 to 0x400791 and Line by -1 to 102
+  [0x000000cd]  Set column to 3
+  [0x000000cf]  Special opcode 54: advance Address by 3 to 0x400794 and Line by 7 to 109
+  [0x000000d0]  Advance PC by constant 17 to 0x4007a5
+  [0x000000d1]  Special opcode 6: advance Address by 0 to 0x4007a5 and Line by 1 to 110
+  [0x000000d2]  Set column to 23
+  [0x000000d4]  Advance PC by 109 to 0x400812
+  [0x000000d6]  Special opcode 7: advance Address by 0 to 0x400812 and Line by 2 to 112
+  [0x000000d7]  Set column to 15
+  [0x000000d9]  Advance PC by 98 to 0x400874
+  [0x000000db]  Special opcode 7: advance Address by 0 to 0x400874 and Line by 2 to 114
+  [0x000000dc]  Set column to 14
+  [0x000000de]  Advance PC by constant 17 to 0x400885
+  [0x000000df]  Special opcode 161: advance Address by 11 to 0x400890 and Line by 2 to 116
+  [0x000000e0]  Set column to 22
+  [0x000000e2]  Special opcode 160: advance Address by 11 to 0x40089b and Line by 1 to 117
+  [0x000000e3]  Set column to 15
+  [0x000000e5]  Advance PC by constant 17 to 0x4008ac
+  [0x000000e6]  Special opcode 7: advance Address by 0 to 0x4008ac and Line by 2 to 119
+  [0x000000e7]  Advance PC by constant 17 to 0x4008bd
+  [0x000000e8]  Special opcode 160: advance Address by 11 to 0x4008c8 and Line by 1 to 120
+  [0x000000e9]  Set column to 7
+  [0x000000eb]  Special opcode 203: advance Address by 14 to 0x4008d6 and Line by 2 to 122
+  [0x000000ec]  Set column to 9
+  [0x000000ee]  Special opcode 146: advance Address by 10 to 0x4008e0 and Line by 1 to 123
+  [0x000000ef]  Set column to 10
+  [0x000000f1]  Special opcode 231: advance Address by 16 to 0x4008f0 and Line by 2 to 125
+  [0x000000f2]  Advance PC by constant 17 to 0x400901
+  [0x000000f3]  Special opcode 118: advance Address by 8 to 0x400909 and Line by 1 to 126
+  [0x000000f4]  Set column to 12
+  [0x000000f6]  Special opcode 146: advance Address by 10 to 0x400913 and Line by 1 to 127
+  [0x000000f7]  Set column to 3
+  [0x000000f9]  Special opcode 233: advance Address by 16 to 0x400923 and Line by 4 to 131
+  [0x000000fa]  Set column to 18
+  [0x000000fc]  Special opcode 217: advance Address by 15 to 0x400932 and Line by 2 to 133
+  [0x000000fd]  Set column to 3
+  [0x000000ff]  Set is_stmt to 0
+  [0x00000100]  Special opcode 89: advance Address by 6 to 0x400938 and Line by 0 to 133
+  [0x00000101]  Set is_stmt to 1
+  [0x00000102]  Special opcode 132: advance Address by 9 to 0x400941 and Line by 1 to 134
+  [0x00000103]  Set column to 0
+  [0x00000105]  Advance Line by -43 to 91
+  [0x00000107]  Advance PC by constant 17 to 0x400952
+  [0x00000108]  Special opcode 201: advance Address by 14 to 0x400960 and Line by 0 to 91
+  [0x00000109]  Set column to 3
+  [0x0000010b]  Set prologue_end to true
+  [0x0000010c]  Advance PC by 50 to 0x400992
+  [0x0000010e]  Special opcode 6: advance Address by 0 to 0x400992 and Line by 1 to 92
+  [0x0000010f]  Advance PC by 2 to 0x400994
+  [0x00000111]  Extended opcode 1: End of Sequence
+

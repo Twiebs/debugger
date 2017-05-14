@@ -1,0 +1,1 @@
+clang -g -O0 test_libdb.c

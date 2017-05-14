@@ -1,0 +1,480 @@
+#include <stdint.h>
+
+typedef struct {
+  const char *functionNames;
+  uintptr_t *functionAddresses;
+  const char *fileNames;
+  uint64_t functionCount;
+  uint64_t fileCount;
+} libdb_Symbol_Table;
+
+typedef enum {
+  libdb_Program_State_INVALID,
+  libdb_ProgramState_UNSTARTED,
+  libdb_Program_State_RUNNING,
+  libdb_Program_State_STOPPED,
+  libdb_Program_State_EXITED,
+} libdb_Program_State;
+
+typedef enum {
+  libdb_Stop_Reason_NONE,
+  libdb_Stop_Reason_BREAKPOINT_HIT,
+} libdb_Stop_Reason;
+
+typedef struct {
+  libdb_Symbol_Table symbol_table;
+  int32_t pid;
+
+  libdb_Program_State state; 
+  libdb_Stop_Reason stop_reason;
+  uint64_t rip;
+  int64_t breakpoint_id;
+} libdb_Program;
+
+
+int libdb_execution_continue(libdb_Program *program); 
+void libdb_exectuion_step_over(libdb_Program *program); 
+void libdb_execution_step_into(libdb_Program *program);
+void libdb_exeuction_step_out(libdb_Program *program); 
+
+int64_t libdb_breakpoint_create(libdb_Program *program, const char *symbolName);
+
+#ifdef LIBDB_IMPLEMENTATION
+#undef LIBDB_IMPLEMENTATION
+
+#include <errno.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <sys/ptrace.h>
+#include <sys/wait.h>
+#include <sys/user.h>
+
+#include <malloc.h>
+#include <stdio.h>
+#include <string.h>
+
+#define R15	0
+#define R14	1
+#define R13	2
+#define R12	3
+#define RBP	4
+#define RBX	5
+#define R11	6
+#define R10	7
+#define R9	8
+#define R8	9
+#define RAX	10
+#define RCX	11
+#define RDX	12
+#define RSI	13
+#define RDI	14
+#define ORIG_RAX 15
+#define RIP	16
+#define CS	17
+#define EFLAGS	18
+#define RSP	19
+#define SS	20
+#define FS_BASE 21
+#define GS_BASE 22
+#define DS	23
+#define ES	24
+#define FS	25
+#define GS	26
+
+#define LIBDB_SIGNAL_TRAP 5 
+
+#ifndef libdb_assert
+#include <assert.h>
+#define libdb_assert(expr) assert(expr)
+#endif //libdb_assert
+#ifndef libdb_log_error
+#define libdb_log_error(...) printf(__VA_ARGS__); printf("\n")
+#endif //libdb_log_error
+#ifndef libdb_log_info
+#define libdb_log_info(...) printf(__VA_ARGS__); printf("\n")
+#endif //libdb_log_info
+#ifndef libdb_log_debug
+#define libdb_log_debug(...) printf(__VA_ARGS__); printf("\n")
+#endif //libdb_log_debug
+
+#define LIBDB_BREAKPOINT_CAPACITY 16  
+
+typedef struct {
+  uint64_t instruction_address;
+  uint64_t replaced_memory;
+} libdb_Breakpoint;
+
+typedef struct {
+  uint64_t breakpoint_addresses[LIBDB_BREAKPOINT_CAPACITY];
+} libdb_Internal;
+
+static libdb_Breakpoint _breakpoints[16];
+static uint32_t _breakpoint_count = 0;
+
+#define ELF64_IMPLEMENTATION
+#include "elf64.h"
+
+static const char* libdb_SIGNAL_NAME_LIST[] = {
+  "NULL SIGNAL",
+  "SIGHUP",
+  "SIGINT",
+  "SIGQUIT",
+  "SIGILL",
+  "SIGTRAP",
+  "SIGARBRT",
+  "SIGBUS",
+  "SIGFPE",
+  "SIGKILL",
+  "SIGUSR1",
+  "SIGSEGV",
+  "SIGUSR2",
+  "SIGPIPE",
+  "SIGALRM",
+  "SIGTERM",
+  "UNUSED",
+  "SIGCHILD",
+  "SIGCONT",
+  "SIGSTOP",
+  "SIGSTP",
+  "SIGTTIN",
+  "SIGTTOU",
+  "SIGURG",
+  "SIGXCPU",
+  "SIGXFSZ",
+  "SIGVTALRM",
+  "SIGPROF",
+  "SIGWINCH",
+  "SIGIO",
+  "SIGPWR",
+  "SIGSYS",
+};
+
+uint64_t libdb_get_rip(libdb_Program *program) {
+  uint64_t result = ptrace(PTRACE_PEEKUSER, program->pid, RIP * 8, 0);
+  return result;
+}
+
+uint64_t libdb_get_instruction(libdb_Program *program, uint64_t address) {
+  uint64_t result = ptrace(PTRACE_PEEKTEXT, program->pid, address);
+  return result;
+
+}
+
+int libdb_execution_continue(libdb_Program *program) {
+  libdb_assert(program->state != libdb_Program_State_RUNNING);
+
+  if (program->breakpoint_id != -1) {
+    libdb_Breakpoint *bp = &_breakpoints[program->breakpoint_id];
+    libdb_assert(program->rip == bp->instruction_address);
+
+    ptrace(PTRACE_POKETEXT, program->pid, 
+      bp->instruction_address, bp->replaced_instruction[0]); 
+    ptrace(PTRACE_POKETEXT, program->pid, 
+      bp->instruction_address + 8, bp->replaced_instruction[1]); 
+
+    uint64_t new_instruction[2];
+    new_instruction[0] = ptrace(PTRACE_PEEKTEXT, program->pid, program->rip + 0);
+    new_instruction[1] = ptrace(PTRACE_PEEKTEXT, program->pid, program->rip + 8);
+    libdb_assert(new_instruction[0] == bp->replaced_instruction[0]);
+    libdb_assert(new_instruction[1] == bp->replaced_instruction[1]);
+     
+    ptrace(PTRACE_POKEUSER, program->pid, RIP * 8, bp->instruction_address);
+    program->rip = ptrace(PTRACE_PEEKUSER, program->pid, RIP * 8);
+    assert(program->rip == bp->instruction_address);
+    libdb_log_debug("the new instruction to execute is 0x%lX", program->rip);
+
+    int process_status = 0;
+    ptrace(PTRACE_SINGLESTEP, program->pid, NULL, NULL);
+    waitpid(program->pid, &process_status, 0);
+    program->rip = ptrace(PTRACE_PEEKUSER, program->pid, RIP * 8);
+    libdb_log_debug("new rip is 0x%lX", program->rip);
+    ptrace(PTRACE_POKETEXT, program->pid, bp->instruction_address, 0xCC);
+    libdb_log_debug("we sucuessfuly single steped and restored the breakpoint");
+  } 
+  
+  int process_status = 0; 
+  assert(program->pid > 0);
+  ptrace(PTRACE_CONT, program->pid, NULL, NULL); 
+
+  //waitpid(program->pid, &process_status, WNOHANG);
+
+
+  //waitpid(program->pid, &process_status, WCONTINUED);
+
+
+  //assert(WIFCONTINUED(process_status));
+  //libdb_log_debug("sucuessfly continued execuction");
+
+  if (program-> breakpoint_id != -1) {
+    libdb_log_debug("continued exectuion from breakpoint %ld, "
+        "now executing instruction 0x%lX", 
+        program->breakpoint_id, program->rip);
+  } else if (program->rip != 0) {
+    libdb_log_debug("continued exectuion from instruction 0x%lX", program->rip);
+  } else {
+    libdb_log_debug("started execution!");
+  }
+
+  program->state = libdb_Program_State_RUNNING;
+  program->stop_reason = libdb_Stop_Reason_NONE;
+  program->breakpoint_id = -1;
+  program->rip = 0;
+  ptrace(PTRACE_CONT, program->pid, NULL, NULL); 
+  return 1;
+}
+
+
+void libdb_exectuion_step_over(libdb_Program *program) {
+
+}
+
+void libdb_execution_step_into(libdb_Program *program) {
+  
+}
+
+void libdb_exeuction_step_out(libdb_Program *program) {
+
+}
+
+int64_t libdb_breakpoint_create(libdb_Program *program, const char *symbolName) 
+{
+  //TODO(Torin) We might have to stop the process here
+
+  libdb_Symbol_Table *symTable = &program->symbol_table;
+  const char *currentFunctionName = symTable->functionNames;
+  for (uint32_t i = 0; i < symTable->functionCount; i++) {
+    
+    if (strcmp(currentFunctionName, symbolName) == 0) {
+      libdb_Breakpoint *breakpoint = &_breakpoints[_breakpoint_count];
+      breakpoint->instruction_address = symTable->functionAddresses[i];
+      
+      //NOTE(Torin) The .text section *should* be before other (.data, .rodata, etc)
+      //sections so this should be always perform a read in the processes address space
+      //but may read some bytes from those sections. If a custom linkerscript is used 
+      //the read should stil fall within the page boundry so we just get garbage
+      breakpoint->replaced_instruction[0] = ptrace(PTRACE_PEEKTEXT, program->pid, 
+       breakpoint->instruction_address, NULL);
+      breakpoint->replaced_instruction[1] = ptrace(PTRACE_PEEKTEXT, program->pid, 
+       breakpoint->instruction_address + 8, NULL);
+      ptrace(PTRACE_POKETEXT, program->pid, breakpoint->instruction_address, 0xCC); 
+
+      libdb_log_info("breakpoint-create: function %s 0x%lX", 
+          symbolName, breakpoint->instruction_address);
+      int64_t breakpointID = _breakpoint_count;
+      _breakpoint_count++;
+      return breakpointID;
+    }
+
+    currentFunctionName += strlen(currentFunctionName) + 1;
+  }
+
+  libdb_log_error("breakpoint_create: failed to create breakpoint "
+      "could not resolve symbol %s", symbolName);
+  return 0;
+}
+
+int libdb_program_update_state(libdb_Program *program) {
+  int childStatus = 0;
+  int child_state_has_changed = waitpid(program->pid, &childStatus, WNOHANG);
+
+  if (child_state_has_changed) {
+    if (childStatus == -1) {
+      libdb_log_error("error on waitpid for childProcess");
+    } else if (childStatus != -1) {
+        
+      if (WIFEXITED(childStatus)) {
+          int exitStatus = WEXITSTATUS(childStatus);
+          libdb_log_info("the child terminated normaly with return code %d", exitStatus);
+          kill(program->pid, SIGKILL);
+          program->pid = 0;
+          program->state = libdb_Program_State_EXITED;
+          program->stop_reason = libdb_Stop_Reason_NONE;
+        } else if (WIFSIGNALED(childStatus)) {
+          int signalNumber = WTERMSIG(childStatus);
+          libdb_log_info("the child recived signal %d", signalNumber);
+        } 
+
+        else if (WIFSTOPPED(childStatus)) {
+          int stopSignalNumber = WSTOPSIG(childStatus);
+          if (stopSignalNumber == LIBDB_SIGNAL_TRAP) {
+            libdb_log_debug("debug program recieved SIGTRAP");
+            libdb_assert(_breakpoint_count > 0);
+
+            program->state = libdb_Program_State_STOPPED;
+            program->stop_reason = libdb_Stop_Reason_BREAKPOINT_HIT;
+            program->breakpoint_id = -1;
+            program->rip = ptrace(PTRACE_PEEKUSER, program->pid, 8 * RIP, NULL);
+            program->rip -= 1; //rip points to the instruction after the int 3
+            //libdb considers the active rip the instruction that was just executed
+
+            for (uint32_t i = 0; i < _breakpoint_count; i++) {
+              libdb_Breakpoint* bp = &_breakpoints[i];
+              if (bp->instruction_address == program->rip) {
+                libdb_log_debug("breakpoint-hit: index %d, rip 0x%lX", i, program->rip); 
+                program->breakpoint_id = i;
+              } 
+            }
+
+            if (program->breakpoint_id == -1) {
+              assert(0);
+            }
+          }
+        } else {
+          libdb_log_debug("UNHANLDED STOP SIGNAL");
+        }
+
+      }
+    return 1;
+  }
+  return 0;
+}
+
+
+
+int libdb_program_open(libdb_Program *program, const char* path) {
+  FILE *file_handle = fopen(path, "rb");
+  if (file_handle == NULL) {
+    libdb_log_error("Could not find exectuable file %s "
+      "when attempting to open program", path);
+  }
+  
+  fseek(file_handle, 0, SEEK_END);
+  size_t file_size = ftell(file_handle);
+  fseek(file_handle, 0, SEEK_SET);
+  uint8_t *fileData = (uint8_t *)malloc(file_size);
+  fread(fileData, 1, file_size, file_handle);
+  fclose(file_handle);
+
+  ELF64Header* header = (ELF64Header*)fileData;
+  if (header->magicNumber != ELF64_MAGIC_NUMBER) {
+    libdb_log_error("executable file \"%s\" is not a valid ELF binary", path);
+  }
+
+  ELFSectionHeader *sectionStringTableSectionHeader = (ELFSectionHeader*)(fileData + 
+      header->sectionHeaderOffset + ((header->sectionStringTableSectionIndex) 
+        * header->sectionHeaderEntrySize));
+  char *sectionStringTableData = (char *)(fileData + 
+      (sectionStringTableSectionHeader->fileOffsetOfSectionData));
+  assert(*sectionStringTableData == 0); //First byte of the stringTableData is always null
+
+  ELFSectionHeader* symbolTableHeader = NULL;
+  ELFSectionHeader* stringTableHeader = NULL;
+  char* symbolStringTableData = NULL;
+  uint32_t symbolTableEntryCount = 0;
+
+  for (uint32_t i = 0; i < header->sectionHeaderEntryCount; i++) {  
+    ELFSectionHeader *sectionHeader = (ELFSectionHeader*)(fileData + 
+      header->sectionHeaderOffset + ((i+1) * header->sectionHeaderEntrySize));
+
+    const char *sectionName = sectionStringTableData + sectionHeader->nameOffset;
+    if (sectionHeader->sectionType == ELF_SECTION_TYPE_STRING_TABLE) {
+      if (strcmp(sectionName, ".strtab") == 0) {
+        stringTableHeader = sectionHeader;
+        symbolStringTableData = (char*)(sectionHeader->fileOffsetOfSectionData + fileData);
+      }
+    } else if (sectionHeader->sectionType == ELF_SECTION_TYPE_SYMBOL_TABLE) {
+      symbolTableHeader = sectionHeader;
+      symbolTableEntryCount = symbolTableHeader->sectionSize / 
+        symbolTableHeader->sectionEntrySize;
+    }
+  }
+
+  assert(symbolTableHeader != NULL);
+  assert(stringTableHeader != NULL);
+  assert(symbolTableEntryCount > 1);
+  ELFSymbol *symbolTableData = 
+    (ELFSymbol*)(symbolTableHeader->fileOffsetOfSectionData + fileData);
+  
+  uint64_t functionSymbolCount = 0;
+  uint64_t functionStringMemoryRequirement = 0;
+  uint64_t fileSymbolCount = 0;
+  uint64_t fileStringMemoryRequirement = 0;
+
+  for (uint32_t i = 1; i < symbolTableEntryCount; i++) {
+    ELFSymbol *symbol = &symbolTableData[i];
+    const char *symbolName = symbol->nameOffset + symbolStringTableData;
+    uintptr_t symbolAddress = symbol->symbolValue;
+    if (symbol->type == ELF_SYMBOL_TYPE_FUNCTION) {
+      functionSymbolCount++;
+      functionStringMemoryRequirement += strlen(symbolName) + 1;
+    } else if (symbol->type == ELF_SYMBOL_TYPE_FILE) {
+      fileSymbolCount++;
+      fileStringMemoryRequirement += strlen(symbolName) + 1;
+    }
+  }
+
+  size_t requiredSymbolTableMemory  = (functionSymbolCount * sizeof(uint64_t)) +
+    functionStringMemoryRequirement + fileStringMemoryRequirement;
+  uint8_t *symbolTableMemory = (uint8_t *)malloc(requiredSymbolTableMemory);
+
+  libdb_Symbol_Table *symTable = &program->symbol_table;
+  symTable->functionNames = (const char *)symbolTableMemory;
+  symTable->functionAddresses = (uintptr_t *)(symbolTableMemory + 
+      functionStringMemoryRequirement);
+  symTable->fileNames = (const char *)symTable->functionAddresses + functionSymbolCount;
+  symTable->functionCount = functionSymbolCount;
+  symTable->fileCount = fileSymbolCount;
+
+  uint32_t currentFunctionIndex = 0;
+  uint32_t currentFileIndex = 0;
+  char *functionNameWrite = (char *)symTable->functionNames;
+  char *fileNameWrite = (char *)symTable->fileNames;
+  for (uint32_t i = 1; i < symbolTableEntryCount; i++) {
+    ELFSymbol *symbol = &symbolTableData[i];
+    const char *symbolName = symbol->nameOffset + symbolStringTableData;
+    uintptr_t symbolAddress = symbol->symbolValue;
+
+    if (symbol->type == ELF_SYMBOL_TYPE_FUNCTION) {
+      size_t symbolNameLength = strlen(symbolName);
+      memcpy(functionNameWrite, symbolName, symbolNameLength);
+      functionNameWrite[symbolNameLength] = 0;
+      functionNameWrite += symbolNameLength + 1;
+      symTable->functionAddresses[currentFunctionIndex] = symbolAddress;
+      currentFunctionIndex++;
+    } else if(symbol->type == ELF_SYMBOL_TYPE_FILE) { 
+      size_t symbolNameLength = strlen(symbolName);
+      memcpy(fileNameWrite, symbolName, symbolNameLength);
+      fileNameWrite[symbolNameLength] = 0;
+      fileNameWrite += symbolNameLength + 1;
+      currentFileIndex++;
+    }
+  }
+
+  assert(currentFunctionIndex == symTable->functionCount);
+  assert(currentFileIndex == symTable->fileCount);
+
+  program->state = libdb_Program_State_STOPPED;
+  program->stop_reason = libdb_Stop_Reason_NONE;
+  program->breakpoint_id = -1;
+  program->rip = 0;
+
+  pid_t pid = fork();
+  program->pid = pid;
+  
+  if (pid == -1) {
+    return 1;  
+  } else if (pid == 0) {
+    char* const args[] = { NULL };
+    char* const envp[] = { NULL };
+    ptrace(PTRACE_TRACEME, NULL, NULL);
+    execve("test", args, envp);
+    libdb_log_error("the child process failed to execute\n");
+    return 1;
+  } else {
+    int childStatus = 0;
+    waitpid(pid, &childStatus, __WALL);
+    if (childStatus == -1) {
+      libdb_log_error("error on waitpid for childProcess");
+    } else {
+      assert(WIFSTOPPED(childStatus));
+      int stopSignalNumber = WSTOPSIG(childStatus);
+      assert(stopSignalNumber == LIBDB_SIGNAL_TRAP);
+    }
+  }
+
+  libdb_log_debug("childpid is %d", pid);
+
+  return 0;
+}
+
+#endif//LIBDB_IMPLEMENTATION
